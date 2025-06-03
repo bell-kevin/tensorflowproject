@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_FRAMEWORK_TENSOR_H_
 #define TENSORFLOW_CORE_FRAMEWORK_TENSOR_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <string>
@@ -172,7 +173,7 @@ class Tensor {
 
   /// \brief Creates a tensor with the input datatype, shape and buf.
   ///
-  /// Takes an ownership of the bufffer from the reference counted pointer.
+  /// Takes an ownership of the buffer from the reference counted pointer.
   Tensor(DataType type, TensorShape shape, core::RefCountPtr<TensorBuffer> buf);
 
   /// \brief Creates an empty Tensor of the given data type.
@@ -314,6 +315,9 @@ class Tensor {
 
   /// Returns the estimated memory usage of this tensor.
   size_t TotalBytes() const;
+
+  // Returns the size of the underlying TensorBuffer
+  size_t GetBufferSize() const;
 
   // Returns the size of allocated memory for this tensor.
   size_t AllocatedBytes() const;
@@ -683,6 +687,9 @@ class Tensor {
   AllocatorMemoryType GetMemoryType() const { return buf_->GetMemoryType(); }
 
  private:
+  // Returns a StringPiece mapping the current tensor's buffer.
+  absl::string_view tensor_data_internal() const;
+
   void CheckType(DataType expected_dtype) const;
   void CheckTypeAndIsAligned(DataType expected_dtype) const;
   void CheckIsAlignedAndSingleElement() const;
@@ -1063,9 +1070,8 @@ void Tensor::ValueAndTensorBuffer<T>::HostScalarTensorBuffer::operator delete(
   // NOTE(mrry): Using `sizeof(Tensor::ValueAndTensorBuffer<T>)` here requires
   // us to define this method outside the class definition, so that it is not
   // considered an incomplete type.
-  typename std::aligned_storage<sizeof(Tensor::ValueAndTensorBuffer<T>),
-                                alignof(Tensor::ValueAndTensorBuffer<T>)>::type
-      dummy_storage_;
+  alignas(Tensor::ValueAndTensorBuffer<T>)
+      std::byte dummy_storage_[sizeof(Tensor::ValueAndTensorBuffer<T>)];
   Tensor::ValueAndTensorBuffer<T>* dummy_object =
       reinterpret_cast<Tensor::ValueAndTensorBuffer<T>*>(&dummy_storage_);
   intptr_t offset = reinterpret_cast<intptr_t>(&dummy_object->tensor_buffer) -

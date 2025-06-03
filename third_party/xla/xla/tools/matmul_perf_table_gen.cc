@@ -16,6 +16,7 @@ limitations under the License.
 #include "xla/tools/matmul_perf_table_gen.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -25,6 +26,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/hash/hash.h"
 #include "absl/log/check.h"
@@ -32,7 +34,6 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "absl/time/time.h"
@@ -46,18 +47,23 @@ limitations under the License.
 #include "xla/hlo/parser/hlo_parser.h"
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/literal.h"
-#include "xla/service/executable.h"
+#include "xla/primitive_util.h"
 #include "xla/service/gpu/model/hlo_op_profile.pb.h"
 #include "xla/service/gpu/model/hlo_op_profiler.h"
 #include "xla/service/gpu/model/hlo_op_profiles.h"
+#include "xla/service/gpu/model/matmul_interpolator_utils.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_runner.h"
+#include "xla/service/hlo_runner_interface.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/tests/test_utils.h"
 #include "xla/tsl/platform/env.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/logging.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/util.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla::gpu {
@@ -68,20 +74,11 @@ namespace {
 constexpr size_t kNumProfilingRuns = 5;
 
 template <class... Ts>
-struct VariantVisitor : Ts... {
+struct Overload : Ts... {
   using Ts::operator()...;
 };
 template <class... Ts>
-VariantVisitor(Ts...) -> VariantVisitor<Ts...>;
-
-struct StaticSpec {
-  int m;
-  int n;
-  int k;
-  std::string dtype_lhs;
-  std::string dtype_rhs;
-  std::string dtype_out;
-};
+Overload(Ts...) -> Overload<Ts...>;
 
 struct ProfilingResult {
   std::string device_info;
@@ -115,6 +112,57 @@ struct PathSpec {
   std::string filepath;
 };
 
+struct StaticSpec {
+  int b;
+  int m;
+  int n;
+  int k;
+  std::string dtype_lhs;
+  std::string dtype_rhs;
+  std::string dtype_out;
+
+  static absl::StatusOr<StaticSpec> FromDotProfile(
+      const HloInstructionProfile& profile) {
+    const HloInstructionProto& instr = profile.instruction();
+    CHECK_EQ(instr.opcode(), HloOpcodeString(HloOpcode::kDot));
+    const DotDimensionNumbers& dot_dims = instr.dot_dimension_numbers();
+    TF_ASSIGN_OR_RETURN(Shape lhs,
+                        Shape::FromProto(profile.operands(0).shape()));
+    TF_ASSIGN_OR_RETURN(Shape rhs,
+                        Shape::FromProto(profile.operands(1).shape()));
+    int b = 1, m = 1, n = 1, k = 1;
+    for (int dim : dot_dims.lhs_batch_dimensions()) {
+      b *= ShapeUtil::GetDimension(lhs, dim);
+    }
+    for (int dim : dot_dims.lhs_contracting_dimensions()) {
+      k *= ShapeUtil::GetDimension(lhs, dim);
+    }
+    for (int dim : GetNonContractingDims(lhs.dimensions().size(),
+                                         dot_dims.lhs_contracting_dimensions(),
+                                         dot_dims.lhs_batch_dimensions())) {
+      m *= ShapeUtil::GetDimension(lhs, dim);
+    }
+    for (int dim : GetNonContractingDims(rhs.dimensions().size(),
+                                         dot_dims.rhs_contracting_dimensions(),
+                                         dot_dims.rhs_batch_dimensions())) {
+      n *= ShapeUtil::GetDimension(rhs, dim);
+    }
+
+    StaticSpec spec;
+    spec.b = b;
+    spec.m = m;
+    spec.n = n;
+    spec.k = k;
+    spec.dtype_lhs =
+        primitive_util::LowercasePrimitiveTypeName(lhs.element_type());
+    spec.dtype_rhs =
+        primitive_util::LowercasePrimitiveTypeName(rhs.element_type());
+    spec.dtype_out = primitive_util::LowercasePrimitiveTypeName(
+        profile.instruction().shape().element_type());
+    return spec;
+  }
+};
+
 using EntrySpec = std::variant<StaticSpec, PathSpec>;
 
 void ReportProgress(absl::string_view prefix, int i, int size) {
@@ -125,25 +173,27 @@ void ReportProgress(absl::string_view prefix, int i, int size) {
 
 std::unique_ptr<HloModule> GetModule(absl::string_view lhs_dtype,
                                      absl::string_view rhs_dtype,
-                                     absl::string_view out_dtype, int m, int n,
-                                     int k) {
-  std::string text = absl::Substitute(R"(
+                                     absl::string_view out_dtype, int b, int m,
+                                     int n, int k) {
+  std::string text =
+      absl::Substitute(R"(
     HloModule m
 
     ENTRY e {
-      lhs = $0[$3,$5] parameter(0)
-      rhs = $1[$5,$4] parameter(1)
-      ROOT _ = $2[$3,$4] dot(lhs,rhs), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+      lhs = $0[$6,$3,$5] parameter(0)
+      rhs = $1[$6,$5,$4] parameter(1)
+      ROOT _ = $2[$6,$3,$4] dot(lhs,rhs), lhs_contracting_dims={2},
+        rhs_contracting_dims={1}, lhs_batch_dims={0}, rhs_batch_dims={0}
     }
   )",
-                                      lhs_dtype, rhs_dtype, out_dtype, m, n, k);
+                       lhs_dtype, rhs_dtype, out_dtype, m, n, k, b);
 
   auto parsed = ParseAndReturnUnverifiedModule(text);
   CHECK_OK(parsed.status());
   return *std::move(parsed);
 }
 
-void Measure(HloRunner& runner, Executable* executable,
+void Measure(HloRunner& runner, OpaqueExecutable* executable,
              const std::vector<Literal>& args_small,
              const std::vector<Literal>& args_large) {
   CHECK_OK(runner.ExecuteWithExecutable(executable, args_small).status());
@@ -162,21 +212,25 @@ void AddDotsFromStaticSpec(const MatmulPerfTableGen::Config& config,
     return i;
   };
 
+  MatmulPerfTableGen::StepSpec b_spec = config.b_spec;
   MatmulPerfTableGen::StepSpec m_spec = config.m_spec;
   MatmulPerfTableGen::StepSpec n_spec = config.n_spec;
   MatmulPerfTableGen::StepSpec k_spec = config.k_spec;
   for (const MatmulPerfTableGen::DataTypeSpec& dtype : config.dtypes) {
-    for (int m = m_spec.start; m <= m_spec.stop; m = inc(m, m_spec)) {
-      for (int n = n_spec.start; n <= n_spec.stop; n = inc(n, n_spec)) {
-        for (int k = k_spec.start; k <= k_spec.stop; k = inc(k, k_spec)) {
-          StaticSpec spec;
-          spec.m = m;
-          spec.k = k;
-          spec.n = n;
-          spec.dtype_lhs = dtype.lhs_dtype;
-          spec.dtype_rhs = dtype.rhs_dtype;
-          spec.dtype_out = dtype.out_dtype;
-          specs.push_back(spec);
+    for (int b = b_spec.start; b <= b_spec.stop; b = inc(b, b_spec)) {
+      for (int m = m_spec.start; m <= m_spec.stop; m = inc(m, m_spec)) {
+        for (int n = n_spec.start; n <= n_spec.stop; n = inc(n, n_spec)) {
+          for (int k = k_spec.start; k <= k_spec.stop; k = inc(k, k_spec)) {
+            StaticSpec spec;
+            spec.b = b;
+            spec.m = m;
+            spec.k = k;
+            spec.n = n;
+            spec.dtype_lhs = dtype.lhs_dtype;
+            spec.dtype_rhs = dtype.rhs_dtype;
+            spec.dtype_out = dtype.out_dtype;
+            specs.push_back(spec);
+          }
         }
       }
     }
@@ -243,28 +297,28 @@ std::vector<ExplicitSpec> GetExplicitSpecs(
   std::vector<ExplicitSpec> specs;
   for (int i = 0; i < entry_specs.size(); i++) {
     const EntrySpec& entry_spec = entry_specs[i];
-    std::visit(VariantVisitor{[&specs](const PathSpec& spec) {
-                                std::string hlo;
-                                CHECK_OK(tsl::ReadFileToString(
-                                    tsl::Env::Default(), spec.filepath, &hlo));
-                                std::unique_ptr<HloModule> model_module =
-                                    GetModule(hlo);
-                                if (model_module == nullptr) {
-                                  return;
-                                }
-                                hlo_query::ForEachInstructionWithOpcode(
-                                    *model_module, HloOpcode::kDot,
-                                    [&specs](HloInstruction* instr) {
-                                      specs.emplace_back(
-                                          ExplicitSpec{CreateDotModule(instr)});
-                                    });
-                              },
-                              [&specs](const StaticSpec spec) {
-                                specs.emplace_back(ExplicitSpec{GetModule(
-                                    spec.dtype_lhs, spec.dtype_rhs,
-                                    spec.dtype_out, spec.m, spec.n, spec.k)});
-                              }},
-               entry_spec);
+    std::visit(
+        Overload{
+            [&specs](const PathSpec& spec) {
+              std::string hlo;
+              CHECK_OK(tsl::ReadFileToString(tsl::Env::Default(), spec.filepath,
+                                             &hlo));
+              std::unique_ptr<HloModule> model_module = GetModule(hlo);
+              if (model_module == nullptr) {
+                return;
+              }
+              hlo_query::ForEachInstructionWithOpcode(
+                  *model_module, HloOpcode::kDot,
+                  [&specs](HloInstruction* instr) {
+                    specs.emplace_back(ExplicitSpec{CreateDotModule(instr)});
+                  });
+            },
+            [&specs](const StaticSpec spec) {
+              specs.emplace_back(ExplicitSpec{
+                  GetModule(spec.dtype_lhs, spec.dtype_rhs, spec.dtype_out,
+                            spec.b, spec.m, spec.n, spec.k)});
+            }},
+        entry_spec);
     ReportProgress("Parsing modules progress", i + 1, entry_specs.size());
   }
   return specs;
@@ -296,32 +350,31 @@ int64_t GetFlops(const HloDotInstruction& dot) {
     return ShapeUtil::GetDimension(instr.shape(), idx);
   };
 
+  const DotDimensionNumbers& dot_dims = dot.dot_dimension_numbers();
+  const HloInstruction& lhs = *dot.operand(0);
+  const HloInstruction& rhs = *dot.operand(1);
+
   // Get non-contracting dims
-  auto get_non_contracting_dim_sizes =
-      [&dot, &dim_size](const absl::flat_hash_set<int>& contracting_dims,
-                        int operand_id) {
-        int64_t fmas = 1;
-        for (int dim = 0; dim < dot.operand(operand_id)->shape().rank();
-             ++dim) {
-          if (contracting_dims.contains(dim)) {
-            continue;
-          }
-          fmas *= dim_size(*dot.operand(operand_id), dim);
-        }
-        return fmas;
-      };
-  fmas *= get_non_contracting_dim_sizes(
-      {dot.dot_dimension_numbers().lhs_contracting_dimensions().begin(),
-       dot.dot_dimension_numbers().lhs_contracting_dimensions().end()},
-      0);
-  fmas *= get_non_contracting_dim_sizes(
-      {dot.dot_dimension_numbers().rhs_contracting_dimensions().begin(),
-       dot.dot_dimension_numbers().rhs_contracting_dimensions().end()},
-      1);
+  for (int dim : GetNonContractingDims(lhs.shape().dimensions().size(),
+                                       dot_dims.lhs_contracting_dimensions(),
+                                       dot_dims.lhs_batch_dimensions())) {
+    fmas *= dim_size(lhs, dim);
+  }
+  for (int dim : GetNonContractingDims(rhs.shape().dimensions().size(),
+                                       dot_dims.rhs_contracting_dimensions(),
+                                       dot_dims.rhs_batch_dimensions())) {
+    fmas *= dim_size(rhs, dim);
+  }
 
   // Get contracting dim.
   for (int dim : dot.dot_dimension_numbers().lhs_contracting_dimensions()) {
-    fmas *= dim_size(*dot.operand(0), dim);
+    fmas *= dim_size(lhs, dim);
+  }
+
+  // Get batch dim
+  for (int dim : dot.dot_dimension_numbers().lhs_batch_dimensions()) {
+    CHECK_EQ(dim_size(lhs, dim), dim_size(rhs, dim));
+    fmas *= dim_size(lhs, dim);
   }
 
   return fmas * 2;  // Every FMA is 2 floating point ops.
@@ -329,7 +382,7 @@ int64_t GetFlops(const HloDotInstruction& dot) {
 
 }  // namespace
 
-std::unique_ptr<Executable> MatmulPerfTableGen::Compile(
+std::unique_ptr<OpaqueExecutable> MatmulPerfTableGen::Compile(
     std::unique_ptr<HloModule> module) {
   auto compiled =
       runner_.CreateExecutable(std::move(module), /*run_hlo_passes=*/true);
@@ -350,7 +403,7 @@ absl::Duration MatmulPerfTableGen::Profile(std::unique_ptr<HloModule> module) {
                                                       /*use_large_range=*/true)
                                         .value();
 
-  std::unique_ptr<Executable> compiled = Compile(std::move(module));
+  std::unique_ptr<OpaqueExecutable> compiled = Compile(std::move(module));
 
   // First run to warm up stuff.
   CHECK_OK(runner_.ExecuteWithExecutable(compiled.get(), args_small).status());
@@ -480,7 +533,7 @@ DeviceHloInstructionProfiles MatmulPerfTableGen::ComputeTable() {
     HloInstruction* instr = module->entry_computation()->root_instruction();
     HloInstructionProto instr_proto = instr->ToProto();
 
-    gpu::HloInstructionProfile entry;
+    HloInstructionProfile entry;
     *entry.mutable_fingerprint() = CanonicalKey(*module);
     *entry.mutable_instruction() = instr_proto;
     for (auto* operand : instr->operands()) {
@@ -501,6 +554,44 @@ DeviceHloInstructionProfiles MatmulPerfTableGen::ComputeTable() {
   std::string device_key = gpu::HloOpProfiles::GetProfileName(device_info);
   device_profiles.mutable_entries()->insert({device_key, profile_list});
   return device_profiles;
+}
+
+/*static*/ absl::StatusOr<GemmPerfTable> MatmulPerfTableGen::Compact(
+    const DeviceHloInstructionProfiles& profiles) {
+  GemmPerfTable result;
+  for (const auto& [device_info, profile_list] : profiles.entries()) {
+    if (!result.entries().contains(device_info)) {
+      result.mutable_entries()->insert({device_info, {}});
+    }
+    absl::flat_hash_map<std::array<int64_t, 4>, GemmPerfTableEntry>
+        gemm_perf_table_entry;
+    for (const HloInstructionProfile& profile : profile_list.entries()) {
+      TF_ASSIGN_OR_RETURN(StaticSpec spec, StaticSpec::FromDotProfile(profile));
+
+      std::array<int64_t, 4> key = {spec.b, spec.m, spec.k, spec.n};
+      if (!gemm_perf_table_entry.contains(key)) {
+        GemmPerfTableEntry entry;
+        entry.set_b(spec.b);
+        entry.set_m(spec.m);
+        entry.set_k(spec.k);
+        entry.set_n(spec.n);
+        gemm_perf_table_entry[key] = std::move(entry);
+      }
+
+      std::string dtype_key =
+          MatmulDTypeKey(spec.dtype_lhs, spec.dtype_rhs, spec.dtype_out)
+              .KeyString();
+
+      GemmPerfTableEntry& entry = gemm_perf_table_entry[key];
+      entry.mutable_flops()->insert({dtype_key, profile.flops()});
+    }
+
+    for (const auto& [_, entry] : gemm_perf_table_entry) {
+      *result.mutable_entries()->at(device_info).add_entries() =
+          std::move(entry);
+    }
+  }
+  return result;
 }
 
 absl::Status MatmulPerfTableGen::Dump(
@@ -538,6 +629,22 @@ absl::Status MatmulPerfTableGen::Dump(
                      ". Expecting .pb or .pbtxt suffix."));
   }
   return absl::OkStatus();
+}
+
+absl::Status MatmulPerfTableGen::Dump(const GemmPerfTable& table) {
+  if (config_.output == "stdout") {
+    LOG(INFO) << table.DebugString();
+    return absl::OkStatus();
+  }
+  if (absl::StrContains(config_.output, ".pbtxt")) {
+    return tsl::WriteTextProto(tsl::Env::Default(), config_.output, table);
+  }
+  if (absl::StrContains(config_.output, ".pb")) {
+    return tsl::WriteBinaryProto(tsl::Env::Default(), config_.output, table);
+  }
+  return absl::InvalidArgumentError(
+      absl::StrCat("Unsupported file: ", config_.output,
+                   ". Expecting .pb or .pbtxt suffix."));
 }
 
 }  // namespace xla::gpu

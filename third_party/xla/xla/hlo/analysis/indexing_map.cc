@@ -29,8 +29,11 @@ limitations under the License.
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/numeric/int128.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -784,6 +787,7 @@ SmallVector<AffineExpr, 4> MapSymbolsToComposedSymbolsList(
 
 }  // namespace
 
+// TODO(willfroom): Change the names to work items/groups.
 static constexpr absl::string_view kVarKindDefault = "default";
 static constexpr absl::string_view kVarKindThreadX = "th_x";
 static constexpr absl::string_view kVarKindThreadY = "th_y";
@@ -1182,6 +1186,11 @@ bool IndexingMap::IsSymbolConstrained(int64_t symbol_id) const {
   return false;
 }
 
+void IndexingMap::RenameDimVar(int64_t id, absl::string_view new_name) {
+  CHECK_LT(id, dim_vars_.size());
+  dim_vars_[id].name = new_name;
+}
+
 RangeEvaluator::RangeEvaluator(const IndexingMap& indexing_map,
                                MLIRContext* mlir_context, bool use_constraints)
     : mlir_context_(mlir_context),
@@ -1278,13 +1287,18 @@ bool IndexingMap::Verify(std::ostream& out) const {
     return true;
   }
   if (affine_map_.getNumDims() != dim_vars_.size()) {
-    out << "dim size must match the number of dimensions in "
-           "the affine map";
+    out << absl::StrCat(
+        "number of dim vars (", dim_vars_.size(),
+        ") must match the number of dimensions in the affine map (",
+        affine_map_.getNumDims(), ")");
     return false;
   }
   if (affine_map_.getNumSymbols() != range_vars_.size() + rt_vars_.size()) {
-    out << "range vars size + rt var size must match the number of "
-           "symbols in the affine map";
+    out << absl::StrCat(
+        "number of range (", range_vars_.size(), ") + runtime (",
+        rt_vars_.size(),
+        ") variables must match the number of symbols in the affine map (",
+        affine_map_.getNumSymbols(), ")");
     return false;
   }
   return true;
@@ -1618,7 +1632,7 @@ SmallBitVector IndexingMap::RemoveUnusedSymbols() {
   if (!CompressVars(/*unused_dims=*/{}, unused_vars.unused_symbols)) {
     return {};
   }
-  return std::move(unused_vars.unused_symbols);
+  return std::move(unused_vars).unused_symbols;
 }
 
 void IndexingMap::ResetToKnownEmpty() {
@@ -1936,6 +1950,57 @@ IndexingMap IndexingMap::ConvertSymbolsToDimensions() const {
   IndexingMap new_indexing_map(canonical_map, new_dim_vars, /*range_vars=*/{},
                                /*rt_vars=*/{}, new_constraints);
   return new_indexing_map;
+}
+
+IndexingMap ConvertRangeVariablesToDimensions(
+    const IndexingMap& map, ArrayRef<int64_t> range_var_indices) {
+  CHECK(std::is_sorted(range_var_indices.begin(), range_var_indices.end()));
+  auto* mlir_context = map.GetMLIRContext();
+
+  AffineMap affine_map = map.GetAffineMap();
+  // Update the affine map and the variables.
+  std::vector<IndexingMap::Variable> dims = map.GetDimVars();
+  std::vector<IndexingMap::Variable> range_vars;
+  SmallVector<AffineExpr, 4> symbol_replacements;
+  symbol_replacements.reserve(affine_map.getNumSymbols());
+  int64_t updated_count = 0;
+  int64_t range_var_indices_count = range_var_indices.size();
+  for (int i = 0; i < map.GetRangeVarsCount(); ++i) {
+    auto range_var = map.GetRangeVar(i);
+    if (updated_count < range_var_indices_count &&
+        i == range_var_indices[updated_count]) {
+      symbol_replacements.push_back(getAffineDimExpr(
+          affine_map.getNumDims() + updated_count, mlir_context));
+      dims.push_back(range_var);
+      updated_count++;
+    } else {
+      symbol_replacements.push_back(
+          getAffineSymbolExpr(i - updated_count, mlir_context));
+      range_vars.push_back(range_var);
+    }
+  }
+  CHECK_EQ(updated_count, range_var_indices_count)
+      << "Not all replacements were used";
+  for (int i = 0; i < map.GetRTVarsCount(); ++i) {
+    symbol_replacements.push_back(getAffineSymbolExpr(
+        map.GetRangeVarsCount() - range_var_indices_count + i, mlir_context));
+  }
+  CHECK_EQ(symbol_replacements.size(), affine_map.getNumSymbols())
+      << "All symbols must be updated";
+  AffineMap converted_affine_map = affine_map.replaceDimsAndSymbols(
+      /*dimReplacements=*/{}, symbol_replacements,
+      /*numResultDims=*/affine_map.getNumDims() + range_var_indices_count,
+      /*numResultSyms=*/affine_map.getNumSymbols() - range_var_indices_count);
+
+  // Update the constraints.
+  std::vector<std::pair<AffineExpr, Interval>> constraints;
+  constraints.reserve(map.GetConstraintsCount());
+  for (auto constraint : map.GetConstraints()) {
+    constraints.push_back({constraint.first.replaceSymbols(symbol_replacements),
+                           constraint.second});
+  }
+  return IndexingMap{converted_affine_map, std::move(dims),
+                     std::move(range_vars), map.GetRTVars(), constraints};
 }
 
 }  // namespace xla

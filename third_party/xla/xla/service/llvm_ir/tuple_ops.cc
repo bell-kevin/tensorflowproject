@@ -34,8 +34,8 @@ limitations under the License.
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/platform/logging.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/logging.h"
 
 namespace xla {
 namespace llvm_ir {
@@ -74,7 +74,7 @@ std::vector<llvm::Value*> EmitTupleAllocasAtFunctionEntry(
   b->SetInsertPoint(&function->getEntryBlock(),
                     function->getEntryBlock().getFirstInsertionPt());
   CHECK(tuple_shape.IsTuple());
-  int tuple_size = tuple_shape.tuple_shapes_size();
+  int tuple_size = tuple_shape.tuple_shapes().size();
 
   std::vector<llvm::Value*> generated_allocas;
   for (int i = 0; i < tuple_size; i++) {

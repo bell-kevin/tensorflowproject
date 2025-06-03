@@ -78,6 +78,7 @@ using DetermineSplitDimensionFunction =
 using BitcastSplitFn = std::function<absl::StatusOr<int64_t>(
     const HloInstruction* instruction, int64_t split_dim)>;
 using ShapeSizeFn = std::function<int64_t(const Shape&)>;
+using HloPositionOrUse = std::variant<HloPosition, HloUse>;
 
 // MSA allows for custom post-allocation transformations. When a post-allocation
 // transformation is performed on an instruction, this result is returned. It
@@ -92,6 +93,22 @@ struct PostAllocationTransformationUpdate {
   absl::flat_hash_map<HloUse, HloUse> update_use_map;
 
   std::string ToString() const;
+};
+
+// The different modes for window prefetch. kWindowExposure is currently the
+// default mode, where the window buffer is exposed from the reserved scoped
+// memory. kWindowPrefetch is a mode where the window buffer is not only exposed
+// from the reserved scoped memory, but also has the content prefetched into
+// alternate memory.
+enum class WindowPrefetchMode {
+  kWindowExposure,
+  kWindowPrefetch,
+};
+
+// A struct to specify the memory space coloring of a buffer position or use.
+struct BufferColoring {
+  HloPositionOrUse buffer_position_or_use;  // Buffer position or use to color.
+  int64_t memory_space;                     // How to color the buffer.
 };
 
 // The different options to be passed to the Run() API.
@@ -360,8 +377,24 @@ struct Options {
   // data to prefetch.
   bool enable_window_prefetch = false;
 
+  // The mode to use for window prefetching.
+  WindowPrefetchMode window_prefetch_mode = WindowPrefetchMode::kWindowExposure;
+
   MsaSortOrderOverrides msa_sort_order_overrides;
+
+  // A mode that enables expanding scoped alternate memory allocations to the
+  // largest contiguous open space available.
+  ExpandedScopedAlternateMemoryMode::Value
+      expanded_scoped_alternate_memory_mode =
+          ExpandedScopedAlternateMemoryMode::DISABLED;
+
+  std::vector<BufferColoring> buffer_colorings;
+
+  // If set, this is the size of scoped alternate memory that we require MSA to
+  // allocate for post-module operations.
+  uint64_t post_module_scoped_alternate_memory_size_in_bytes = 0;
 };
+
 }  // namespace memory_space_assignment
 }  // namespace xla
 

@@ -5,8 +5,6 @@ load(
     "//tensorflow/dtensor:build_defs.bzl",
     "ALL_BACKENDS",
     "GPU_2DEVS_BACKEND",
-    "PATHWAYS",
-    "PATHWAYS_V3_DONUT_BACKEND",
     "TPU_V3_DONUT_BACKEND",
     "TPU_V4_DONUT_BACKEND",
     "dtensor_test",
@@ -76,7 +74,6 @@ py_strict_test(
     srcs = [
         "api_test.py",
     ],
-    python_version = "PY3",
     deps = [
         ":test_util",
         "//tensorflow/dtensor/python:api",
@@ -193,13 +190,10 @@ dtensor_test(
     additional_backends = [
         TPU_V3_DONUT_BACKEND,
         GPU_2DEVS_BACKEND,
-        PATHWAYS,
-        PATHWAYS_V3_DONUT_BACKEND,
     ],
     deps = [
         ":test_util",
         "//tensorflow/dtensor/python:api",
-        "//tensorflow/dtensor/python:config",
         "//tensorflow/dtensor/python:d_variable",
         "//tensorflow/dtensor/python:dtensor_device",
         "//tensorflow/dtensor/python:layout",
@@ -231,7 +225,6 @@ dtensor_test(
     deps = [
         ":test_util",
         "//tensorflow/dtensor/python:api",
-        "//tensorflow/dtensor/python:config",
         "//tensorflow/dtensor/python:d_variable",
         "//tensorflow/dtensor/python:dtensor_device",
         "//tensorflow/dtensor/python:layout",
@@ -601,6 +594,7 @@ dtensor_test(
     env = {
         "DTENSOR_GPU_USE_NCCL_COMMUNICATION": "1",
         "NCCL_P2P_DISABLE": "1",  # FIXME(b/251183104): p2p detection in cuda 10.1+ is broken.
+        "NCCL_CUMEM_HOST_ENABLE": "0",  # TODO(b/414413290): workaround for cuda 12.8.1 failure.
     },
     tags = [
         "no_windows",

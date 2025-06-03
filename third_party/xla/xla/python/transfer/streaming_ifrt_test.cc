@@ -25,6 +25,7 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
@@ -46,17 +47,17 @@ limitations under the License.
 namespace aux {
 namespace {
 
-xla::ifrt::PjRtDevice* GetOtherDevice(tsl::RCReference<xla::ifrt::Array> arr) {
+xla::ifrt::PjRtDevice* GetOtherDevice(xla::ifrt::ArrayRef arr) {
   auto* ifrt_client =
       llvm::dyn_cast_or_null<xla::ifrt::PjRtClient>(arr->client());
   return llvm::dyn_cast<xla::ifrt::PjRtDevice>(ifrt_client->devices()[1]);
 }
 
-xla::ifrt::PjRtClient* GetIfrtClient(tsl::RCReference<xla::ifrt::Array> arr) {
+xla::ifrt::PjRtClient* GetIfrtClient(xla::ifrt::ArrayRef arr) {
   return llvm::dyn_cast_or_null<xla::ifrt::PjRtClient>(arr->client());
 }
 
-xla::Shape ShapeFromIfrt(tsl::RCReference<xla::ifrt::Array> arr) {
+xla::Shape ShapeFromIfrt(xla::ifrt::ArrayRef arr) {
   auto* pjrt_arr =
       llvm::dyn_cast_or_null<xla::ifrt::PjRtCompatibleArray>(arr.get());
   auto buffer = pjrt_arr->pjrt_buffers()[0].get();
@@ -65,7 +66,7 @@ xla::Shape ShapeFromIfrt(tsl::RCReference<xla::ifrt::Array> arr) {
 
 struct SingleBufferCopyPlan {
   std::vector<tsl::RCReference<ChunkDestination>> dests;
-  std::vector<tsl::RCReference<xla::ifrt::Array>> arrays;
+  std::vector<xla::ifrt::ArrayRef> arrays;
 };
 
 // Single buffer copy plan example.
@@ -74,9 +75,11 @@ absl::StatusOr<SingleBufferCopyPlan> SetupTransferDestList(
     xla::ifrt::PjRtClient* ifrt_client, size_t xfer_size) {
   auto* pjrt_client = ifrt_client->pjrt_client();
   // CHECK_EQ(pjrt_client->platform_id(), xla::TpuId());
+  TF_ASSIGN_OR_RETURN(auto* pjrt_memory_space,
+                      device->pjrt_device()->default_memory_space());
   TF_ASSIGN_OR_RETURN(auto atm_owned,
-                   pjrt_client->CreateBuffersForAsyncHostToDevice(
-                       {shape}, device->pjrt_device()));
+                      pjrt_client->CreateBuffersForAsyncHostToDevice(
+                          {shape}, pjrt_memory_space));
   auto atm = std::shared_ptr<xla::PjRtClient::AsyncHostToDeviceTransferManager>(
       std::move(atm_owned));
   SingleBufferCopyPlan results;
@@ -117,7 +120,7 @@ TEST(PremappedCopierState, RoundTrip) {
 
   for (size_t i = 0; i < src_work_units.size(); ++i) {
     cstate->ScheduleCopy(
-        src_work_units[i],
+        std::move(src_work_units[i]),
         [&mu, &local_queue](PremappedCopierState* state, void* buf,
                             const DmaCopyChunk& chunk) {
           absl::MutexLock l(&mu);
@@ -149,9 +152,15 @@ TEST(PremappedCopierState, RoundTrip) {
 TEST(Semaphore, Basic) {
   internal::IsLastSemaphore semaphore(15);
   for (size_t i = 0; i < 10; ++i) {
-    semaphore.DoWork(1, [&](bool is_last) { EXPECT_FALSE(is_last); });
+    CHECK_OK(semaphore.DoWork(1, [&](bool is_last) -> absl::Status {
+      EXPECT_FALSE(is_last);
+      return absl::OkStatus();
+    }));
   }
-  semaphore.DoWork(5, [&](bool is_last) { EXPECT_TRUE(is_last); });
+  CHECK_OK(semaphore.DoWork(5, [&](bool is_last) -> absl::Status {
+    EXPECT_TRUE(is_last);
+    return absl::OkStatus();
+  }));
 }
 
 TEST(Semaphore, Async) {
@@ -175,24 +184,26 @@ TEST(Semaphore, Async) {
       tsl::Env::Default()->StartThread({}, "t1", [&]() {
         for (size_t i = 0; i < 8; ++i) {
           thread_wait_flip(0);
-          o_semaphore.DoWork(1, [&](bool is_last) {
+          CHECK_OK(o_semaphore.DoWork(1, [&](bool is_last) -> absl::Status {
             thread_flip(0);
             EXPECT_FALSE(is_last);
-          });
+            return absl::OkStatus();
+          }));
         }
       }));
   std::unique_ptr<tsl::Thread> t2(
       tsl::Env::Default()->StartThread({}, "t2", [&]() {
         for (size_t i = 0; i < 8; ++i) {
           thread_wait_flip(1);
-          o_semaphore.DoWork(1, [&](bool is_last) {
+          CHECK_OK(o_semaphore.DoWork(1, [&](bool is_last) -> absl::Status {
             thread_flip(1);
             if (i == 7) {
               EXPECT_TRUE(is_last);
             } else {
               EXPECT_FALSE(is_last);
             }
-          });
+            return absl::OkStatus();
+          }));
         }
       }));
 }

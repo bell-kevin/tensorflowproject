@@ -35,7 +35,6 @@ limitations under the License.
 #include "xla/stream_executor/activate_context.h"
 #include "xla/stream_executor/blas.h"
 #include "xla/stream_executor/command_buffer.h"
-#include "xla/stream_executor/cuda/cuda_collectives.h"
 #include "xla/stream_executor/cuda/cuda_context.h"
 #include "xla/stream_executor/cuda/cuda_kernel.h"
 #include "xla/stream_executor/device_description.h"
@@ -111,7 +110,6 @@ class CudaExecutor : public GpuExecutor {
   absl::StatusOr<std::unique_ptr<MemoryAllocation>> HostMemoryAllocate(
       uint64_t size) override;
 
-  void HostMemoryDeallocate(void* location) override;
   bool HostMemoryRegister(void* location, uint64_t size) override;
   bool HostMemoryUnregister(void* location) override;
 
@@ -134,10 +132,10 @@ class CudaExecutor : public GpuExecutor {
   absl::StatusOr<const CudaKernel*> GetCudaKernel(const Kernel* kernel);
 
   // Creates, allocates, and copies a CUtensorMap object for the given TMA
-  // descriptor.  Returns a DeviceMemoryBase pointing to the allocated
-  // CUtensorMap object to be used as an argument to a kernel.
-  absl::StatusOr<DeviceMemoryBase> CreateTensorMap(
-      TmaDescriptor tma_desc, void* global_address) override;
+  // descriptor. Returns a TensorMap, which is 128 bytes of storage, to be
+  // passed by value to the kernel.
+  absl::StatusOr<TensorMap> CreateTensorMap(TmaDescriptor tma_desc,
+                                            void* global_address) override;
   absl::StatusOr<std::unique_ptr<MemoryAllocator>> CreateMemoryAllocator(
       MemoryType type) override;
 
@@ -191,6 +189,9 @@ class CudaExecutor : public GpuExecutor {
 
   // The minor version of the compute capability for device_.
   int cc_minor_;
+
+  // The NUMA node of the CPU closest to device_
+  int numa_node_;
 
   // Reader/writer lock for mutable data structures on this object.
   absl::Mutex mu_;

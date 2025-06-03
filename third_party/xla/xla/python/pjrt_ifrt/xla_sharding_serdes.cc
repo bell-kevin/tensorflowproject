@@ -44,7 +44,8 @@ class HloShardingSerDes : public llvm::RTTIExtends<HloSharding, SerDes> {
   }
 
   absl::StatusOr<std::string> Serialize(
-      Serializable& serializable, std::unique_ptr<SerializeOptions>) override {
+      const Serializable& serializable,
+      std::unique_ptr<SerializeOptions>) override {
     const HloSharding& sharding = llvm::cast<HloSharding>(serializable);
     HloShardingProto proto;
     *proto.mutable_devices() = sharding.devices()->ToProto();
@@ -66,10 +67,9 @@ class HloShardingSerDes : public llvm::RTTIExtends<HloSharding, SerDes> {
       return absl::InvalidArgumentError(
           "Failed to parse serialized HloSharding");
     }
-    TF_ASSIGN_OR_RETURN(
-        auto devices,
-        DeviceList::FromProto(deserialize_sharding_options->lookup_device,
-                              proto.devices()));
+    TF_ASSIGN_OR_RETURN(auto devices, DeviceList::FromProto(
+                                          deserialize_sharding_options->client,
+                                          proto.devices()));
     MemoryKind memory_kind;
     if (proto.has_memory_kind()) {
       memory_kind = MemoryKind(proto.memory_kind());

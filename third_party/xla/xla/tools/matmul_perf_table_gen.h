@@ -26,9 +26,9 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/executable.h"
 #include "xla/service/gpu/model/hlo_op_profile.pb.h"
 #include "xla/service/hlo_runner.h"
+#include "xla/service/hlo_runner_interface.h"
 #include "xla/service/platform_util.h"
 #include "xla/xla_data.pb.h"
 
@@ -54,6 +54,7 @@ class MatmulPerfTableGen {
 
     // Search space.
     std::vector<DataTypeSpec> dtypes;
+    StepSpec b_spec;
     StepSpec m_spec;
     StepSpec n_spec;
     StepSpec k_spec;
@@ -75,13 +76,19 @@ class MatmulPerfTableGen {
   // Dumps a performance `table` to a given `output_file` from `Config`.
   absl::Status Dump(const DeviceHloInstructionProfiles& table);
 
+  // Dumps a performance `table` to a given `output_file` from `Config`.
+  absl::Status Dump(const GemmPerfTable& table);
+
   // Reads, deduplicates and merges multiple `xla.gpu.DeviceInstructionProfiles`
   // residing in a given `filepath`.
   absl::StatusOr<DeviceHloInstructionProfiles> Merge(
       absl::string_view filepath);
 
+  static absl::StatusOr<GemmPerfTable> Compact(
+      const DeviceHloInstructionProfiles& profiles);
+
  private:
-  std::unique_ptr<Executable> Compile(std::unique_ptr<HloModule> module);
+  std::unique_ptr<OpaqueExecutable> Compile(std::unique_ptr<HloModule> module);
 
   absl::Duration Profile(std::unique_ptr<HloModule> module);
 

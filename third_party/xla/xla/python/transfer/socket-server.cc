@@ -19,8 +19,8 @@ limitations under the License.
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
@@ -28,8 +28,11 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "xla/python/transfer/event_loop.h"
 #include "xla/python/transfer/streaming.h"
 #include "xla/python/transfer/transfer_socket.pb.h"
@@ -42,8 +45,31 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
   explicit SocketNetworkState(std::shared_ptr<PullTable> table,
                               std::shared_ptr<BulkTransportFactory> factory,
                               int fd)
-      : table_(std::move(table)), factory_(std::move(factory)), fd_(fd) {}
+      : table_(std::move(table)), factory_(std::move(factory)), fd_(fd) {
+    is_connected_ = true;
+  }
+  explicit SocketNetworkState(std::shared_ptr<PullTable> table,
+                              std::shared_ptr<BulkTransportFactory> factory,
+                              const SocketAddress& addr)
+      : table_(std::move(table)),
+        factory_(std::move(factory)),
+        fd_(-1),
+        remote_addr_(addr) {
+    StartConnect();
+  }
   ~SocketNetworkState() override { close(fd_); }
+
+  void StartConnect() {
+    int send_fd = socket(remote_addr_.address().sa_family,
+                         SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    connect(send_fd, reinterpret_cast<const struct sockaddr*>(&remote_addr_),
+            sizeof(remote_addr_));
+    int value = 1;
+    CHECK_GE(
+        setsockopt(send_fd, SOL_SOCKET, SO_ZEROCOPY, &value, sizeof(value)), 0)
+        << strerror(errno) << " " << errno;
+    fd_ = send_fd;
+  }
 
   void PopulatePollInfo(pollfd& events) override {
     events.fd = fd_;
@@ -54,21 +80,52 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
   }
 
   bool HandleEvents(const pollfd& events) override {
+    if (!is_connected_) {
+      // poll() may remind us that fd_ is invalid while waiting to reconnect.
+      if (fd_ == -1) {
+        return true;
+      }
+      // If HUP with an error happens, then schedule a reconnect.
+      if ((events.revents & POLLHUP) && (events.revents & POLLERR)) {
+        fd_ = -1;
+        loop()->ScheduleAt(absl::Now() + absl::Seconds(2),
+                           [this]() { StartConnect(); });
+        return true;
+      }
+      if (!(events.revents & POLLOUT)) {
+        return true;
+      }
+      is_connected_ = true;
+    }
     if (events.revents & POLLIN) {
       ssize_t recv_size =
           recv(fd_, network_buffer_.get(), 4096 - recv_count_, 0);
       if (recv_size == 0) {
-        absl::MutexLock l(&mu_);
-        peer_is_closed_ = true;
+        {
+          absl::MutexLock l(&mu_);
+          is_poisoned_ = true;
+          peer_is_closed_ = true;
+          poison_status_ = absl::InternalError(
+              "SocketServer: Connection closed recv() == 0.");
+        }
+        ClearDestTable();
       } else if (recv_size == -1 && errno == EAGAIN) {
       } else {
-        CHECK_GE(recv_size, 0) << strerror(errno) << " " << errno;
+        if (recv_size < 0) {
+          Poison(absl::InternalError(
+              absl::StrFormat("%ld = recv() failed errno: %d err: %s",
+                              recv_size, errno, strerror(errno))));
+          return true;
+        }
         recv_count_ += recv_size;
         while (recv_count_ >= sizeof(uint32_t)) {
           uint32_t frame_size;
           memcpy(&frame_size, network_buffer_.get(), sizeof(uint32_t));
-          CHECK_GE(frame_size, 0);
-          CHECK_LE(frame_size, 4096 - sizeof(uint32_t));
+          if (frame_size < 0 || frame_size > 4096 - sizeof(uint32_t)) {
+            Poison(absl::InternalError(
+                absl::StrFormat("frame_size is too large: %lu", frame_size)));
+            return true;
+          }
           size_t total_frame_size =
               static_cast<size_t>(frame_size) + sizeof(uint32_t);
           // Needs more input.
@@ -78,7 +135,11 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
           absl::string_view buffer(network_buffer_.get() + sizeof(uint32_t),
                                    frame_size);
           SocketTransferRequest req;
-          CHECK(req.ParseFromArray(buffer.data(), buffer.size()));
+          if (!req.ParseFromArray(buffer.data(), buffer.size())) {
+            Poison(
+                absl::InternalError("Could not parse SocketTransferRequest."));
+            return true;
+          }
           HandlePacket(req);
           if (total_frame_size < recv_count_) {
             memmove(network_buffer_.get(),
@@ -95,6 +156,10 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
     mu_.Lock();
     while (!frames_.empty() && can_send_) {
       auto& packet_to_send = frames_.front();
+      if (packet_to_send.empty()) {
+        shutdown(fd_, SHUT_WR);
+        break;
+      }
       const void* base = packet_to_send.data() + write_offset_;
       size_t size = packet_to_send.size() - write_offset_;
       ssize_t send_size = send(fd_, base, size, 0);
@@ -106,6 +171,12 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
         } else {
           can_send_ = false;
         }
+      } else {
+        mu_.Unlock();
+        Poison(absl::InternalError(
+            absl::StrFormat("%ld = send() failed errno: %d err: %s", send_size,
+                            errno, strerror(errno))));
+        return true;
       }
     }
     if (peer_is_closed_ && num_refs_ == 0) {
@@ -118,6 +189,7 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
   }
 
   bool can_send_ = false;
+  bool is_connected_ = false;
   size_t write_offset_ = 0;
   std::deque<std::string> frames_;
 
@@ -155,14 +227,18 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
     return dest;
   }
 
-  size_t InstallPull(tsl::RCReference<ChunkDestination> dest) {
-    size_t req_id;
-    {
-      absl::MutexLock l(&mu_);
-      dests_[next_req_id_].dest = std::move(dest);
-      req_id = next_req_id_;
-      ++next_req_id_;
+  std::optional<size_t> InstallPull(tsl::RCReference<ChunkDestination> dest) {
+    mu_.Lock();
+    if (is_poisoned_) {
+      auto poison_status = poison_status_;
+      dest->Poison(std::move(poison_status));
+      mu_.Unlock();
+      return std::nullopt;
     }
+    dests_[next_req_id_].dest = std::move(dest);
+    size_t req_id = next_req_id_;
+    ++next_req_id_;
+    mu_.Unlock();
     return req_id;
   }
 
@@ -271,6 +347,7 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
     SocketTransferRequest msg;
     msg.mutable_half_close();
     SendFrame(msg);
+    DropRef();
   }
 
   void HandlePacket(const SocketTransferHalfClose& half_close) {
@@ -290,13 +367,28 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
 
   void Pull(uint64_t uuid, int buf_id,
             tsl::RCReference<ChunkDestination> dest) {
-    size_t req_id = InstallPull(std::move(dest));
+    std::optional<size_t> req_id = InstallPull(std::move(dest));
+    if (!req_id.has_value()) {
+      return;
+    }
     SocketTransferRequest msg;
     SocketTransferPullRequest& req = *msg.mutable_pull();
     req.set_uuid(uuid);
     req.add_buffer_ids(buf_id);
-    req.set_req_id(req_id);
+    req.set_req_id(*req_id);
     SendFrame(msg);
+  }
+
+  void InjectFailure() {
+    uint32_t header = 12341024;
+    std::string opacket = std::string(absl::string_view(
+        reinterpret_cast<const char*>(&header), sizeof(header)));
+    opacket += "Injected Failure.";
+    {
+      absl::MutexLock l(&mu_);
+      frames_.push_back(std::move(opacket));
+    }
+    loop()->SendWake(this);
   }
 
   static void Accept(std::shared_ptr<PullTable> table,
@@ -306,13 +398,39 @@ class SocketServer::SocketNetworkState : public PollEventLoop::Handler {
     remote->Register();
   }
 
+  void ClearDestTable() {
+    absl::Status poison_status;
+    absl::flat_hash_map<uint64_t, DestState> dests;
+    {
+      absl::MutexLock l(&mu_);
+      std::swap(dests, dests_);
+      poison_status = poison_status_;
+    }
+    for (auto& v : dests) {
+      v.second.dest->Poison(poison_status);
+    }
+  }
+
+  void Poison(absl::Status s) {
+    {
+      absl::MutexLock l(&mu_);
+      is_poisoned_ = true;
+      shutdown(fd_, SHUT_RDWR);
+      poison_status_ = s;
+    }
+    ClearDestTable();
+  }
+
  private:
   std::shared_ptr<PullTable> table_;
   std::shared_ptr<BulkTransportFactory> factory_;
   absl::Mutex mu_;
-  size_t num_refs_ = 0;
+  size_t num_refs_ = 1;
   bool peer_is_closed_ = false;
-  int fd_;
+  bool is_poisoned_ = false;
+  absl::Status poison_status_;
+  int fd_ = -1;
+  SocketAddress remote_addr_;
   size_t recv_count_ = 0;
   std::unique_ptr<char[]> network_buffer_ =
       std::unique_ptr<char[]>(new char[4096]);
@@ -337,6 +455,8 @@ void SocketServer::Connection::Pull(uint64_t uuid, int buffer_id,
   local_->Pull(uuid, buffer_id, std::move(dest));
 }
 
+void SocketServer::Connection::InjectFailure() { local_->InjectFailure(); }
+
 absl::Status SocketServer::Start(
     const SocketAddress& addr,
     std::shared_ptr<BulkTransportFactory> bulk_transport_factory) {
@@ -358,16 +478,8 @@ absl::Status SocketServer::Start(
 
 tsl::RCReference<SocketServer::Connection> SocketServer::Connect(
     const SocketAddress& other_addr) {
-  int send_fd = socket(other_addr.address().sa_family,
-                       SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-  connect(send_fd, reinterpret_cast<const struct sockaddr*>(&other_addr),
-          sizeof(other_addr));
-  int value = 1;
-  CHECK_GE(setsockopt(send_fd, SOL_SOCKET, SO_ZEROCOPY, &value, sizeof(value)),
-           0)
-      << strerror(errno) << " " << errno;
   auto* local_ =
-      new SocketNetworkState(pull_table_, bulk_transport_factory_, send_fd);
+      new SocketNetworkState(pull_table_, bulk_transport_factory_, other_addr);
   local_->Register();
   local_->StartBulkTransporting();
   return tsl::MakeRef<Connection>(local_);

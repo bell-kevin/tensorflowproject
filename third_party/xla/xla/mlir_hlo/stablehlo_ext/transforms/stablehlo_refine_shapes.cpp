@@ -30,6 +30,7 @@ limitations under the License.
 #include "stablehlo/dialect/TypeInference.h"
 #include "stablehlo/transforms/Passes.h"
 #include "stablehlo/transforms/StablehloRefineShapes.h"
+#include "stablehlo/transforms/optimization/Passes.h"
 #include "stablehlo_ext/IR/base.h"
 #include "stablehlo_ext/IR/stablehlo_ops.h"
 #include "stablehlo_ext/transforms/passes.h"  // NOLINT: Used in passes.h.inc
@@ -153,7 +154,7 @@ struct StablehloRefineShapesPass
           patterns->add<RefineDynamicReduceWindowOpPattern>(context);
           patterns->add<RefineDynamicRngBitGeneratorOpPattern>(context);
           patterns->add<RefineDynamicTopKOpPattern>(context);
-          populateSdyShapeRefinementPatterns(patterns, context);
+          populateSdyShapeRefinementPatterns(context, patterns);
         };
 
     if (failed(stablehlo::refineEntryFunction(*context, func,
@@ -166,12 +167,12 @@ struct StablehloRefineShapesPass
 
 void populateStablehloExtRefineShapesPatterns(RewritePatternSet *patterns,
                                               MLIRContext *context) {
-  stablehlo::populateStablehloRefineShapesPatterns(patterns, context);
-  stablehlo::populateStablehloShapeFolderPatterns(patterns, context);
+  stablehlo::populateStablehloRefineShapesPatterns(context, patterns);
+  stablehlo::populateStablehloShapeFolderPatterns(context, patterns);
   patterns->add<RefineDynamicReduceWindowOpPattern>(context);
   patterns->add<RefineDynamicRngBitGeneratorOpPattern>(context);
   patterns->add<RefineDynamicTopKOpPattern>(context);
-  populateSdyShapeRefinementPatterns(patterns, context);
+  populateSdyShapeRefinementPatterns(context, patterns);
 }
 
 }  // namespace stablehlo_ext

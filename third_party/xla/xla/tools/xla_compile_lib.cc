@@ -56,12 +56,14 @@ limitations under the License.
 #include "xla/service/symbol_repository.h"
 #include "xla/service/xla_compile_result.pb.h"
 #include "xla/shape.h"
+#include "xla/stream_executor/device_description.pb.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tools/hlo_module_loader.h"
 #include "xla/tsl/platform/env.h"
 #include "xla/util.h"
+#include "xla/xla.pb.h"
 #include "tsl/platform/env_time.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/path.h"
@@ -259,9 +261,9 @@ absl::Status XlaCompileMain(const XlaCompileOptions& options) {
         absl::StrCat("platform", options.platform, " is not supported"));
   }
 
-  if (options.output_path.empty() && options.result_output_file.empty()) {
+  if (options.output_file.empty() && options.result_output_file.empty()) {
     return absl::InvalidArgumentError(
-        "At least one of output_path and result_output_file is required");
+        "At least one of output_file and result_output_file is required");
   }
 
   const BackendType backend =
@@ -346,9 +348,9 @@ absl::Status XlaCompileMain(const XlaCompileOptions& options) {
     return result.status();
   }
 
-  if (!options.output_path.empty()) {
+  if (!options.output_file.empty()) {
     TF_RETURN_IF_ERROR(tsl::WriteStringToFile(tsl::Env::Default(),
-                                              options.output_path, *result));
+                                              options.output_file, *result));
   }
 
   if (options.repo_options.wait_for_uploads) {

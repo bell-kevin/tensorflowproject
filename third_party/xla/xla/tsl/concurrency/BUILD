@@ -8,6 +8,27 @@ package(
     licenses = ["notice"],
 )
 
+filegroup(
+    name = "xla_cpu_runtime_hdrs",
+    srcs = [
+        "async_value.h",
+        "async_value_ref.h",
+        "chain.h",
+        "concurrent_vector.h",
+        "ref_count.h",
+    ],
+    compatible_with = get_compatible_with_portable(),
+)
+
+filegroup(
+    name = "xla_cpu_runtime_srcs",
+    srcs = [
+        "async_value.cc",
+        "async_value_ref.cc",
+    ],
+    compatible_with = get_compatible_with_portable(),
+)
+
 cc_library(
     name = "async_value",
     srcs = [
@@ -32,6 +53,7 @@ cc_library(
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/platform:context",
     ],
 )
 
@@ -41,8 +63,9 @@ tsl_cc_test(
     deps = [
         ":async_value",
         "//xla/tsl/platform:test",
+        "//xla/tsl/platform:test_benchmark",
+        "//xla/tsl/platform:test_main",
         "@com_google_absl//absl/status",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 

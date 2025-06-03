@@ -124,6 +124,12 @@ def XLA_PureCallOp : XLA_Op<"pure_call",
     void setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
       (*this)->setAttr("callee", callee.get<mlir::SymbolRefAttr>());
     }
+    mlir::Attribute removeArgAttrsAttr() { return nullptr; }
+    mlir::Attribute removeResAttrsAttr() { return nullptr; }
+    mlir::ArrayAttr getArgAttrsAttr() { return nullptr; }
+    mlir::ArrayAttr getResAttrsAttr() { return nullptr; }
+    void setArgAttrsAttr(mlir::ArrayAttr) { return; }
+    void setResAttrsAttr(mlir::ArrayAttr) { return; }
   }];
 }
 
@@ -283,6 +289,15 @@ def LoopOp : XLA_Op<"loop", [
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
+
+def WorkGroupIdOp : XLA_Op<"workgroup_id", [
+    Pure,
+  ]> {
+  let assemblyFormat = "$dimension attr-dict";
+  let arguments =(ins WorkGroupDimensionAttr:$dimension);
+  let results = (outs Index);
+}
+
 
 #endif // XLA_CODEGEN_EMITTERS_IR_XLA_OPS
 

@@ -52,27 +52,31 @@ do_external_licenses_check(){
 @com_github_googlecloudplatform_google_cloud_cpp//google
 @com_github_grpc_grpc//src/compiler
 @platforms//os
+@ml_dtypes_py//ml_dtypes
 @ruy//
+@rules_java_builtin//toolchains
 @rules_python//
 @stablehlo//stablehlo/experimental
 EOF
 
   # grep patterns for targets which are allowed to be extra licenses
   cat > $BATS_TEST_TMPDIR/allowed_to_be_extra <<EOF
-//third_party/mkl
-//third_party/mkl_dnn
+@local_xla//third_party/mkl
+@local_xla//third_party/mkl_dnn
 @absl_py//
 @bazel_tools//src
 @bazel_tools//platforms
-@bazel_tools//tools/
+@bazel_tools//tools
 @org_tensorflow//tensorflow
 @com_google_absl//
+@internal_platforms_do_not_use//host
 @pybind11_abseil//pybind11_abseil
 //external
 @local
 @com_github_googlecloudplatform_google_cloud_cpp//
 @embedded_jdk//
 ^//$
+@ml_dtypes_py//
 @ruy//
 EOF
 

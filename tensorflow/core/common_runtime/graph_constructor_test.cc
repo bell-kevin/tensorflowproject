@@ -38,6 +38,7 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/public/release_version.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/public/version.h"
 
@@ -987,7 +988,7 @@ TEST_F(GraphConstructorTest, ImportGraphDef) {
 
   // Importing again should fail because of node name collisions.
   s = ImportGraphDef(opts, def, &graph_, nullptr);
-  EXPECT_TRUE(errors::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
 
   // But succeed if a unique prefix is provided.
   opts.prefix = "import";
@@ -1045,17 +1046,17 @@ TEST_F(GraphConstructorTest, ImportGraphDef_Versioning) {
 
   def.mutable_versions()->set_producer(TF_GRAPH_DEF_VERSION_MIN_PRODUCER - 1);
   absl::Status s = ImportGraphDef(opts, def, &graph_, nullptr);
-  EXPECT_TRUE(errors::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
 
   def.mutable_versions()->Clear();
   def.mutable_versions()->set_min_consumer(TF_GRAPH_DEF_VERSION + 1);
   s = ImportGraphDef(opts, def, &graph_, nullptr);
-  EXPECT_TRUE(errors::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
 
   def.mutable_versions()->Clear();
   def.mutable_versions()->add_bad_consumers(TF_GRAPH_DEF_VERSION);
   s = ImportGraphDef(opts, def, &graph_, nullptr);
-  EXPECT_TRUE(errors::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
 
   def.mutable_versions()->Clear();
   graph_.ToGraphDef(&def);
@@ -3219,7 +3220,7 @@ TEST_F(GraphConstructorTest, ImportGraphDef_ValidateColocationConstraints) {
   // TODO(yaozhang): Extend ExpectError to check error type and use ExpectError
   // and ExpectOK to replace the code below.
   absl::Status s = ImportGraphDef(options, def, &graph_, nullptr);
-  EXPECT_TRUE(errors::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
   options.validate_colocation_constraints = false;
   TF_EXPECT_OK(ImportGraphDef(options, def, &graph_, nullptr));
 }

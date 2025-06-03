@@ -681,10 +681,11 @@ class TFLiteConverterBase:
     self._experimental_reduce_type_precision = False
     self._experimental_qdq_conversion_mode = None
     self._experimental_disable_per_channel_quantization_for_dense_layers = False
-    self._experimental_enable_composite_direct_lowering = False
+    self._experimental_enable_composite_direct_lowering = True
     self.model_origin_framework = constants.UNSET
     self.canonicalizing_inf_as_min_max_float = True
     self._experimental_strict_qdq = False
+    self._experimental_unsafe_fuse_dynamic_shaped_broadcast = False
 
     # Debug parameters
     self.ir_dump_dir = None
@@ -854,6 +855,9 @@ class TFLiteConverterBase:
             self.canonicalizing_inf_as_min_max_float
         ),
         "serialize_debug_metadata": self.serialize_debug_metadata,
+        "unsafe_fuse_dynamic_shaped_broadcast": (
+            self._experimental_unsafe_fuse_dynamic_shaped_broadcast
+        ),
     }
 
     if self.saved_model_dir:

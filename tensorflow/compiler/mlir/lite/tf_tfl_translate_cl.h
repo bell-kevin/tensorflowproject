@@ -48,6 +48,17 @@ extern llvm::cl::opt<bool> enable_dynamic_update_slice;
 extern llvm::cl::opt<bool> preserve_assert_op;
 extern llvm::cl::opt<bool> legalize_custom_tensor_list_ops;
 extern llvm::cl::opt<bool> reduce_type_precision;
+extern llvm::cl::opt<std::string> input_arrays;
+extern llvm::cl::opt<std::string> input_dtypes;
+extern llvm::cl::opt<std::string> input_shapes;
+extern llvm::cl::opt<std::string> output_arrays;
+extern llvm::cl::opt<std::string> control_output_arrays;
+extern llvm::cl::opt<std::string> inference_type;
+extern llvm::cl::opt<std::string> min_values;
+extern llvm::cl::opt<std::string> max_values;
+extern llvm::cl::opt<std::string> debug_info_file;
+extern llvm::cl::opt<bool> upgrade_legacy;
+extern llvm::cl::opt<bool> enable_shape_inference;
 
 // Import saved model.
 extern llvm::cl::opt<bool> import_saved_model_object_graph;
@@ -73,9 +84,6 @@ extern llvm::cl::opt<bool> post_training_quantization;
 
 // TF to stablehlo pass flags
 extern llvm::cl::opt<bool> enable_stablehlo_conversion;
-
-// Whether serialize stablehlo ops or not
-extern llvm::cl::opt<bool> serialize_stablehlo_ops;
 
 // Whether to enable the attempt to directly lower composites into tflite ops or
 // not.

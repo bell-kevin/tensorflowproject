@@ -21,6 +21,7 @@ package(
         "@local_tsl//tsl/profiler:__subpackages__",
         "//tensorflow/core/profiler:__subpackages__",
         "//tensorflow/python/profiler/internal:__pkg__",
+        "//third_party/xprof:__subpackages__",
     ]),
     licenses = ["notice"],
 )
@@ -48,6 +49,7 @@ cc_library(
         "//xla/tsl/platform:logging",
         "//xla/tsl/platform:status",
         "//xla/tsl/platform:types",
+        "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:coding",
         "@local_tsl//tsl/platform:platform_port",
         "@local_tsl//tsl/platform:raw_coding",
@@ -87,6 +89,9 @@ cc_library(
         "//xla/tsl/platform:macros",
         "//xla/tsl/platform:status",
         "//xla/tsl/platform:types",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:coding",
     ],
     alwayslink = True,
@@ -111,6 +116,7 @@ cc_library(
     hdrs = ["iterator.h"],
     deps = [
         "//xla/tsl/platform:status",
+        "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:stringpiece",
     ],
     alwayslink = True,
@@ -214,9 +220,10 @@ cc_library(
         "cache.h",
     ],
     deps = [
-        "@local_tsl//tsl/platform:mutex",
+        "@com_google_absl//absl/synchronization",
         "@local_tsl//tsl/platform:raw_coding",
         "@local_tsl//tsl/platform:stringpiece",
+        "@local_tsl//tsl/platform:thread_annotations",
     ],
 )
 
@@ -237,6 +244,7 @@ cc_library(
         ":table_options",
         "//xla/tsl/platform:env",
         "//xla/tsl/platform:errors",
+        "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:coding",
     ],
     alwayslink = True,
@@ -461,6 +469,7 @@ tsl_cc_test(
     deps = [
         ":cache",
         "//xla/tsl/platform:test",
+        "//xla/tsl/util:safe_reinterpret_cast",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:coding",
         "@local_tsl//tsl/platform:raw_coding",
@@ -587,6 +596,7 @@ tsl_cc_test(
         "//xla/tsl/platform:env_impl",
         "//xla/tsl/platform:errors",
         "//xla/tsl/platform:test",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:strcat",
     ],

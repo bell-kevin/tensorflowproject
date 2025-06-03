@@ -18,10 +18,9 @@ limitations under the License.
 #include <cstdint>
 #include <utility>
 
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -35,6 +34,7 @@ limitations under the License.
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
@@ -42,8 +42,8 @@ limitations under the License.
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/transforms/Passes.h"
 #include "stablehlo/transforms/StablehloRefineShapes.h"
+#include "stablehlo/transforms/optimization/Passes.h"
 #include "stablehlo_ext/transforms/stablehlo_refine_shapes.h"
 
 namespace mlir {
@@ -256,14 +256,14 @@ LogicalResult applyShapeRefinementPatterns(OpTy regionOp) {
   // The algorithm behind this pass consists of a single traversal of the
   // function. This is sufficient because we only support one function per
   // program at the moment.
-  // TODO(#1048): Find out why .maxIterations = 1 no longer works.
+  // TODO(#1048): Find out why .setMaxIterations(1) no longer works.
   // There have been recent refactors to applyPatternsGreedily
   // upstream, and that might be the reason.
-  config.useTopDownTraversal = true;
-  config.enableRegionSimplification = GreedySimplifyRegionLevel::Aggressive;
-  config.maxIterations = 2;
-  config.maxNumRewrites = GreedyRewriteConfig::kNoLimit;
-  config.strictMode = GreedyRewriteStrictness::AnyOp;
+  config.setUseTopDownTraversal(true)
+      .setRegionSimplificationLevel(GreedySimplifyRegionLevel::Aggressive)
+      .setMaxIterations(2)
+      .setMaxNumRewrites(GreedyRewriteConfig::kNoLimit)
+      .setStrictness(GreedyRewriteStrictness::AnyOp);
 
   populateStablehloExtRefineShapesPatterns(&patterns, context);
   patterns.add<RefineManualComputationOpPattern>(context);
@@ -272,11 +272,11 @@ LogicalResult applyShapeRefinementPatterns(OpTy regionOp) {
   // which is a critical part of implementing type refinement for ops like
   // dynamic_broadcast_in_dim, dynamic_iota and dynamic_reshape whose shape
   // depends on the value of their shape operands.
-  stablehlo::populateStablehloShapeFolderPatterns(&patterns, context);
+  stablehlo::populateStablehloShapeFolderPatterns(context, &patterns);
 
   if (failed(applyPatternsGreedily(regionOp, std::move(patterns), config)))
     regionOp.emitError("Failed to converge StablehloRefineShapes in ")
-        << config.maxIterations << " iterations";
+        << config.getMaxIterations() << " iterations";
 
   return success();
 }
@@ -401,8 +401,8 @@ struct RefineInferTypeOpInterfacePattern
 }  // namespace
 
 /// Patterns for refining shapes of Shardy ops.
-void populateSdyShapeRefinementPatterns(RewritePatternSet* patterns,
-                                        MLIRContext* context) {
+void populateSdyShapeRefinementPatterns(MLIRContext* context,
+                                        RewritePatternSet* patterns) {
   patterns->add<RefineManualComputationOpPattern>(context);
   patterns->add<RefineNamedComputationOpPattern>(context);
   patterns->add<RefineInferTypeOpInterfacePattern>(context);

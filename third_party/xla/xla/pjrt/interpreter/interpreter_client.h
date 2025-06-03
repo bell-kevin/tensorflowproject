@@ -55,6 +55,7 @@ limitations under the License.
 #include "xla/service/hlo_cost_analysis.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/fingerprint.h"
 
 namespace xla {
@@ -87,7 +88,7 @@ class InterpreterDescription final : public PjRtDeviceDescription {
 
 class InterpreterMemorySpace final : public PjRtMemorySpace {
  public:
-  explicit InterpreterMemorySpace(absl::Nonnull<PjRtClient*> client)
+  explicit InterpreterMemorySpace(PjRtClient* absl_nonnull client)
       : client_(ABSL_DIE_IF_NULL(client)) {}
 
   PjRtClient* client() const override { return client_; }
@@ -114,7 +115,7 @@ class InterpreterMemorySpace final : public PjRtMemorySpace {
 
 class InterpreterDevice final : public PjRtDevice {
  public:
-  explicit InterpreterDevice(absl::Nonnull<PjRtClient*> client)
+  explicit InterpreterDevice(PjRtClient* absl_nonnull client)
       : client_(ABSL_DIE_IF_NULL(client)) {}
 
   // Return the client that owns this device.
@@ -168,14 +169,14 @@ class InterpreterDevice final : public PjRtDevice {
 // A buffer that wraps a Literal.
 class InterpreterLiteralWrapperBuffer final : public PjRtBuffer {
  public:
-  InterpreterLiteralWrapperBuffer(absl::Nonnull<PjRtClient*> client,
-                                  absl::Nonnull<PjRtMemorySpace*> memory_space,
+  InterpreterLiteralWrapperBuffer(PjRtClient* absl_nonnull client,
+                                  PjRtMemorySpace* absl_nonnull memory_space,
                                   const LiteralSlice& literal)
       : client_(client),
         memory_space_(memory_space),
         literal_(literal.Clone()) {}
-  InterpreterLiteralWrapperBuffer(absl::Nonnull<PjRtClient*> client,
-                                  absl::Nonnull<PjRtMemorySpace*> memory_space,
+  InterpreterLiteralWrapperBuffer(PjRtClient* absl_nonnull client,
+                                  PjRtMemorySpace* absl_nonnull memory_space,
                                   Literal literal)
       : client_(client),
         memory_space_(memory_space),
@@ -258,12 +259,6 @@ class InterpreterLiteralWrapperBuffer final : public PjRtBuffer {
 
   bool IsDeleted() override { return is_deleted_; }
 
-  absl::StatusOr<std::unique_ptr<PjRtBuffer>> CopyToDevice(
-      PjRtDevice* dst_device) override {
-    return absl::UnimplementedError(
-        "CopyToDevice not supported by InterpreterLiteralWrapperBuffer.");
-  }
-
   absl::StatusOr<std::unique_ptr<PjRtBuffer>> CopyToMemorySpace(
       PjRtMemorySpace* dst_memory_space) override {
     return absl::UnimplementedError(
@@ -275,15 +270,6 @@ class InterpreterLiteralWrapperBuffer final : public PjRtBuffer {
                           RemoteSendCallback on_done) override {
     LOG(ERROR) << "InterpreterLiteralWrapperBuffer::CopyToRemoteDevice was "
                   "called but is not implemented.";
-  }
-
-  void CopyToRemoteDeviceScattered(
-      PjRtFuture<std::vector<std::string>> serialized_descriptors,
-      std::vector<RemoteSendCallback> callbacks,
-      const ScatterDetails& scatter_details) override {
-    LOG(ERROR)
-        << "InterpreterLiteralWrapperBuffer::CopyToRemoteDeviceScattered "
-           "was called but is not implemented.";
   }
 
   PjRtFuture<> GetReadyFuture() override {
@@ -305,7 +291,7 @@ class InterpreterLiteralWrapperBuffer final : public PjRtBuffer {
 class InterpreterLoadedExecutable final : public PjRtLoadedExecutable {
  public:
   explicit InterpreterLoadedExecutable(
-      absl::Nonnull<PjRtClient*> client, std::unique_ptr<HloModule> hlo_module,
+      PjRtClient* absl_nonnull client, std::unique_ptr<HloModule> hlo_module,
       std::unique_ptr<HloEvaluator> hlo_evaluator,
       std::optional<DynamicDimensionInference> dynamic_dimension_inference,
       std::shared_ptr<DeviceAssignment> device_assignment,
@@ -406,7 +392,12 @@ class InterpreterLoadedExecutable final : public PjRtLoadedExecutable {
 class InterpreterClient final : public PjRtClient {
  public:
   InterpreterClient()
-      : interpreter_device_{this},
+      : InterpreterClient([]() { return std::make_unique<HloEvaluator>(); }) {}
+  explicit InterpreterClient(
+      absl::AnyInvocable<std::unique_ptr<HloEvaluator>() const>
+          hlo_evaluator_factory)
+      : hlo_evaluator_factory_(std::move(hlo_evaluator_factory)),
+        interpreter_device_{this},
         interpreter_memory_space_{this},
         devices_({&interpreter_device_}),
         memory_spaces_({&interpreter_memory_space_}) {}
@@ -463,15 +454,13 @@ class InterpreterClient final : public PjRtClient {
     return std::make_unique<HloCostAnalysis>(ShapeSizeBytes);
   }
 
-  absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> Compile(
+  absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> CompileAndLoad(
       const XlaComputation& computation, CompileOptions options) override;
 
-  absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> Compile(
+  absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> CompileAndLoad(
       mlir::ModuleOp module, CompileOptions options) override;
 
-  absl::StatusOr<std::unique_ptr<PjRtBuffer>> BufferFromHostLiteral(
-      const LiteralSlice& literal, PjRtMemorySpace* memory_space) override;
-
+  using PjRtClient::BufferFromHostLiteral;
   absl::StatusOr<std::unique_ptr<PjRtBuffer>> BufferFromHostLiteral(
       const LiteralSlice& literal, PjRtMemorySpace* memory_space,
       const Layout* device_layout) override;
@@ -487,6 +476,8 @@ class InterpreterClient final : public PjRtClient {
   absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> RunBackend(
       std::unique_ptr<HloModule> hlo_module, CompileOptions& options);
 
+  absl::AnyInvocable<std::unique_ptr<HloEvaluator>() const>
+      hlo_evaluator_factory_;
   InterpreterDevice interpreter_device_;
   InterpreterMemorySpace interpreter_memory_space_;
   // Pointer array of devices (just one) so that we can create a span of it.

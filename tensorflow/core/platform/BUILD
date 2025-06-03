@@ -498,7 +498,6 @@ cc_library(
 py_strict_test(
     name = "ram_file_system_test",
     srcs = ["ram_file_system_test.py"],
-    python_version = "PY3",
     deps = [
         # copybara:uncomment "//third_party/py/google/protobuf:use_fast_cpp_protos",
         "//tensorflow/python/compat:v2_compat",
@@ -951,9 +950,12 @@ cc_library(
         ":bfloat16",
         ":platform",
         ":tstring",
+        "@local_tsl//tsl/platform:bfloat16",
         "@local_tsl//tsl/platform:ml_dtypes",
+        "@local_tsl//tsl/platform:tstring",
         "@local_tsl//tsl/platform:types",
         "@local_xla//xla/tsl/framework:device_type",
+        "@local_xla//xla/tsl/platform:types",
     ],
 )
 
@@ -1124,7 +1126,7 @@ cc_library(
     name = "test_main",
     testonly = 1,
     deps = [
-        "@com_google_googletest//:gtest_main",
+        "@local_xla//xla/tsl/platform:test_main",
     ],
 )
 

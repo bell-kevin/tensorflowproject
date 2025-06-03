@@ -16,13 +16,18 @@ limitations under the License.
 #ifndef XLA_BACKENDS_CPU_XNN_FUSION_H_
 #define XLA_BACKENDS_CPU_XNN_FUSION_H_
 
+#include "xnnpack.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "xla/backends/cpu/codegen/target_machine_features.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/shape.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla::cpu {
+
+inline constexpr absl::string_view kXnnFusionKind = "__xnn_fusion";
 
 // Returns true if XNNPACK should use thread pool to execute given HLO
 // instruction or computation. We rely on simple heuristics to determine if
@@ -34,7 +39,10 @@ bool XnnShouldUseThreadPool(const HloComputation* computation);
 // if the dot operation shape is invalid.
 absl::StatusOr<bool> IsXnnDotSupported(
     const DotDimensionNumbers& dot_dimensions, const Shape& lhs_shape,
-    const Shape& rhs_shape, const Shape& out_shape);
+    const Shape& rhs_shape, const Shape& out_shape,
+    const TargetMachineFeatures* cpu_features = nullptr);
+
+absl::StatusOr<xnn_datatype> XnnDatatype(const PrimitiveType& type);
 
 }  // namespace xla::cpu
 

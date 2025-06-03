@@ -27,16 +27,16 @@ limitations under the License.
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/OwningOpRef.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/quantization/common/test_base.h"
+#include "tensorflow/compiler/mlir/quantization/common/tf_test_base.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/exported_model.pb.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/protobuf/saver.pb.h"
 #include "tsl/platform/protobuf.h"  // IWYU pragma: keep
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
 
 namespace mlir::quant::stablehlo {
 namespace {
@@ -176,7 +176,7 @@ TEST(CreateSaverDefTest, ReturnsErrorStatusIfSaverDefNodesPartiallyExist) {
 // Testing ConvertMlirModuleToExportedModel requires parsing MLIR string to
 // ModuleOp.
 using ConvertMlirModuleToExportedModelTest =
-    ::mlir::quant::QuantizationTestBase;
+    ::mlir::tf_quant::QuantizationTestBase;
 
 TEST_F(ConvertMlirModuleToExportedModelTest, SimpleGraphDefSet) {
   // Define a module a no-op main function.

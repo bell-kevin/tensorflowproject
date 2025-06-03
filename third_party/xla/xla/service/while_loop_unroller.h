@@ -74,6 +74,37 @@ std::optional<int64_t> MatchShapeCoveringDynamicIndexInstruction(
     const HloInstruction* instr, const HloInstruction* input, HloOpcode opcode,
     const WhileLoopConfig& config);
 
+// More advanced version of the above method. Also checks if `instr` is a
+// dynamic index instruction, i.e. dynamic-elice or dynamic-update-slice with
+// the given input that operates on the entire shape of the instruction. To
+// satisfy this (this constraint list is looser):
+// 1. All start indices must be constant zero except for a single dimension,
+//    hereafter referred to as the dynamic dimension.
+// 2. The slice sizes of all nondynamic dimensions is the same as their size in
+//    the input shape.
+// 3. The start index of the dynamic dimension should be equal to the enclosing
+//    loop induction variable times the dynamic dimension's slice size.
+// 4. The size of the dynamic dimension must be at most the loop trip count
+//    times the slice size.
+// If so, it returns the index of the dynamic dimension.
+std::optional<int64_t> AdvancedMatchShapeCoveringDynamicIndexInstruction(
+    const HloInstruction* instr, const HloInstruction* input, HloOpcode opcode,
+    const WhileLoopConfig& config);
+
+// More advanced version of the above two methods that handles limited cases of
+// nested while loops. Specifically, it returns true if all of the following are
+// true:
+// 1. The input shape is fully covered by dynamic_update_slice instructions in
+// the while loop (potentially via those in nested loops).
+// 2. In the case of nested loops, there are only two levels of nesting.
+// 3. In the case of nested loops, the input shape and slice shape are
+// effectively square, i.e., all dynamic_update_slice instructions have two
+// dynamic dimensions, and the input shape and slice shape have the same size in
+// both those dimensions.
+// 4. There is a single DUS in the outer while loop.
+absl::StatusOr<bool> IsInputShapeCoveredByDynamicUpdateSliceInstructions(
+    int64_t input_idx, const WhileLoopConfig& config);
+
 // Check if `instr` is a dynamic-slice with the given input and a single dynamic
 // start index that is effectively static, i.e., it is an expression that only
 // involves the iteration variable of the surrounding loop and some constants,

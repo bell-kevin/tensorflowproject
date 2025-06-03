@@ -45,9 +45,9 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/tsl/lib/core/bitmap.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/logging.h"  // IWYU pragma: keep
 
 namespace xla {
 
@@ -120,6 +120,10 @@ class LiteralUtil {
   // Creates a scalar literal value containing the maximum value of the given
   // primitive type. For floating-point types supporting inf, returns inf.
   static Literal MaxValue(PrimitiveType primitive_type);
+  // Creates a scalar literal value containing the maximum finite value of the
+  // given primitive type. For floating-point types that do not support inf,
+  // this is the same as MaxValue.
+  static Literal MaxFiniteValue(PrimitiveType primitive_type);
   // Creates a scalar literal value containing the NaN value of the given
   // primitive type. Fail for non-inexact types. For complex types, returns a
   // nan + nan * j value.
@@ -326,7 +330,7 @@ template <typename NativeT>
 template <typename T>
 /* static */ Literal LiteralUtil::CreateR0(PrimitiveType primitive_type,
                                            T value) {
-  return primitive_util::ArrayTypeSwitch<Literal>(
+  return primitive_util::ArrayTypeSwitch(
       [&value](auto type) {
         using NativeT = primitive_util::NativeTypeOf<type>;
         return CreateR0(static_cast<NativeT>(value));
