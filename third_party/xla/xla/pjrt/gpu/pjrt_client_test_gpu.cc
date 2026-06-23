@@ -1,4 +1,4 @@
-/* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2026 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -12,19 +12,19 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/lite/toco/tensorflow_graph_matching/cluster_utils.h"
 
-#include <cstdint>
+#include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
+#include "xla/pjrt/gpu/se_gpu_pjrt_client_test_helper.h"
+#include "xla/pjrt/pjrt_client_test.h"
 
-namespace toco {
+namespace xla {
+namespace {
 
-void Transpose2DTensor(const float* tensor, int64_t row, int64_t col,
-                       float* transposed_tensor) {
-  for (int64_t r = 0; r < row; ++r) {
-    for (int64_t c = 0; c < col; ++c) {
-      transposed_tensor[c * row + r] = tensor[r * col + c];
-    }
-  }
-}
+const bool kUnused =
+    (RegisterTestClientFactory([]() {
+       return GetStreamExecutorGpuClient(GetTestGpuClientOptions(2));
+     }),
+     true);
 
-}  // end namespace toco
+}  // namespace
+}  // namespace xla
